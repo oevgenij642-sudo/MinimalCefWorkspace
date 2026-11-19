@@ -1,0 +1,7 @@
+build/
+build_win/
+third_party/
+*.tar.bz2
+*.zip
+launcher.html
+demo_local.html

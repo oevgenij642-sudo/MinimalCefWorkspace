@@ -1,0 +1,37 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ main, master ]
+
+jobs:
+  build-win64:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download CEF Windows x64 Minimal
+        shell: pwsh
+        run: |
+          $data = Invoke-RestMethod -Uri 'https://cef-builds.spotifycdn.com/index.json'
+          $file = $data.windows64.versions[0].files | Where-Object { $_.type -eq 'minimal' } | Select-Object -First 1
+          $url = 'https://cef-builds.spotifycdn.com/' + $file.name
+          Invoke-WebRequest -Uri $url -OutFile 'cef_win64.tar.bz2'
+          New-Item -ItemType Directory -Force -Path 'third_party\cef' | Out-Null
+          tar -xjf cef_win64.tar.bz2 -C third_party/cef --strip-components=1
+          Remove-Item cef_win64.tar.bz2
+
+      - name: Configure CMake
+        run: cmake -B build_win -A x64
+
+      - name: Build Release EXE
+        run: cmake --build build_win --config Release --parallel
+
+      - name: Upload Windows Portable ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: MinimalCefWorkspace-Win64
+          path: build_win/Release/*
