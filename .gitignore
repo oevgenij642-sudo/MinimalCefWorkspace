@@ -1,7 +1,9 @@
 build/
 build_win/
 third_party/
+win64-toolchain.cmake
 *.tar.bz2
 *.zip
 launcher.html
 demo_local.html
+config.ini

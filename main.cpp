@@ -28,8 +28,8 @@
 #include "include/cef_parser.h"
 #include "include/wrapper/cef_helpers.h"
 
-const int HEADER_DRAG_H = 18;
-const int CORNER_RESIZE = 14;
+const int header_drag_h = 18;
+const int corner_resize = 14;
 
 std::mutex state_mtx;
 bool start_workspace = false;
@@ -37,7 +37,18 @@ std::vector<std::string> target_urls;
 int file_picker_idx = -1;
 int paste_target_idx = -1;
 
-std::string escape_js(const std::string& s) {
+struct app_settings {
+    std::string mode = "menu";
+    std::string config_url = "";
+    std::string background = "background.png";
+    int width = 1360;
+    int height = 840;
+    std::vector<std::string> raw_windows;
+};
+
+std::string
+escape_js(const std::string& s)
+{
     std::string res;
     for (char c : s) {
         if (c == '\\') res += "\\\\";
@@ -48,7 +59,9 @@ std::string escape_js(const std::string& s) {
     return res;
 }
 
-std::string url_decode(const std::string& str) {
+std::string
+url_decode(const std::string& str)
+{
     std::string res;
     for (size_t i = 0; i < str.length(); ++i) {
         if (str[i] == '%' && i + 2 < str.length()) {
@@ -69,7 +82,9 @@ std::string url_decode(const std::string& str) {
     return res;
 }
 
-std::string format_url(const std::string& raw) {
+std::string
+format_url(const std::string& raw)
+{
     std::string decoded = url_decode(raw);
     size_t sep = decoded.find("::");
     std::string mode = (sep != std::string::npos) ? decoded.substr(0, sep) : "url";
@@ -91,7 +106,96 @@ std::string format_url(const std::string& raw) {
     return "https://" + val;
 }
 
-std::string get_menu_html(const std::string& bg_uri, const std::string& def_file) {
+app_settings
+load_config(const std::string& base_dir, const std::string& def_file)
+{
+    app_settings cfg;
+    std::string path = base_dir + "config.ini";
+    std::ifstream in(path);
+
+    if (!in.is_open()) {
+        std::ofstream out(path);
+        out << "mode=menu\n"
+            << "config_url=\n"
+            << "width=1360\n"
+            << "height=840\n"
+            << "background=background.png\n"
+            << "window=url::https://www.google.com\n"
+            << "window=file::" << def_file << "\n"
+            << "window=url::https://www.wikipedia.org\n"
+            << "window=url::https://news.ycombinator.com\n";
+        cfg.raw_windows = {
+            "url::https://www.google.com",
+            "file::" + def_file,
+            "url::https://www.wikipedia.org",
+            "url::https://news.ycombinator.com"
+        };
+        return cfg;
+    }
+
+    std::string line;
+    while (std::getline(in, line)) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == '\n')) {
+            line.pop_back();
+        }
+        if (line.empty() || line[0] == '#' || line[0] == ';') continue;
+
+        size_t eq = line.find('=');
+        if (eq == std::string::npos) continue;
+
+        std::string key = line.substr(0, eq);
+        std::string val = line.substr(eq + 1);
+
+        if (key == "mode") cfg.mode = val;
+        else if (key == "config_url") cfg.config_url = val;
+        else if (key == "background") cfg.background = val;
+        else if (key == "width") cfg.width = std::max(640, std::atoi(val.c_str()));
+        else if (key == "height") cfg.height = std::max(480, std::atoi(val.c_str()));
+        else if (key == "window" && !val.empty()) cfg.raw_windows.push_back(val);
+    }
+
+    if (cfg.raw_windows.empty()) {
+        cfg.raw_windows = {
+            "url::https://www.google.com",
+            "file::" + def_file,
+            "url::https://www.wikipedia.org",
+            "url::https://news.ycombinator.com"
+        };
+    }
+
+    return cfg;
+}
+
+std::string
+build_items_js(const std::vector<std::string>& raw_windows, const std::string& def_file)
+{
+    std::string js = "[\n";
+    for (size_t i = 0; i < 6; ++i) {
+        std::string mode = "url";
+        std::string val = "https://example.com";
+        if (i < raw_windows.size()) {
+            size_t sep = raw_windows[i].find("::");
+            if (sep != std::string::npos) {
+                mode = raw_windows[i].substr(0, sep);
+                val = raw_windows[i].substr(sep + 2);
+            } else {
+                val = raw_windows[i];
+            }
+        } else if (i == 1) {
+            mode = "file";
+            val = def_file;
+        }
+        js += "    { mode: '" + escape_js(mode) + "', val: '" + escape_js(val) + "' }";
+        if (i < 5) js += ",";
+        js += "\n";
+    }
+    js += "  ]";
+    return js;
+}
+
+std::string
+get_menu_html(const std::string& bg_uri, const std::string& def_file, const app_settings& cfg)
+{
     std::string html = R"html(
 <!DOCTYPE html>
 <html lang="ru">
@@ -167,11 +271,11 @@ std::string get_menu_html(const std::string& bg_uri, const std::string& def_file
       <div class="title">Настройка окон браузера</div>
       <div class="counts">
         <span>Количество окон:</span>
-        <button id="cnt-1" onclick="setCount(1)">1</button>
-        <button id="cnt-2" onclick="setCount(2)">2</button>
-        <button id="cnt-3" onclick="setCount(3)">3</button>
-        <button id="cnt-4" class="active" onclick="setCount(4)">4</button>
-        <button id="cnt-6" onclick="setCount(6)">6</button>
+        <button id="cnt-1" onclick="set_count(1)">1</button>
+        <button id="cnt-2" onclick="set_count(2)">2</button>
+        <button id="cnt-3" onclick="set_count(3)">3</button>
+        <button id="cnt-4" onclick="set_count(4)">4</button>
+        <button id="cnt-6" onclick="set_count(6)">6</button>
       </div>
     </div>
     <div class="list" id="rows"></div>
@@ -180,38 +284,31 @@ std::string get_menu_html(const std::string& bg_uri, const std::string& def_file
         Перемещение: за верхний край (или Alt + ЛКМ), размер: правый нижний угол.<br>
         F1 — меню, F2 — сетка, F5 — тест JS, ESC — выход.
       </div>
-      <button class="go" onclick="startApp()">Запустить</button>
+      <button class="go" onclick="start_app()">Запустить</button>
     </div>
   </div>
 
 <script>
-  const items = [
-    { mode: 'url',  val: 'https://www.google.com' },
-    { mode: 'file', val: '__DEF_FILE__' },
-    { mode: 'url',  val: 'https://www.wikipedia.org' },
-    { mode: 'url',  val: 'https://news.ycombinator.com' },
-    { mode: 'url',  val: 'https://example.com' },
-    { mode: 'url',  val: 'https://example.org' }
-  ];
+  const items = __ITEMS_JS__;
 
-  let count = 4;
-  let activeIdx = 0;
+  let count = __INIT_COUNT__;
+  let active_idx = 0;
   let seq = 0;
 
-  function sendCmd(cmd, data) {
+  function send_cmd(cmd, data) {
     seq++;
     document.title = cmd + '|' + seq + '|' + data;
   }
 
-  function saveInputs() {
+  function save_inputs() {
     for (let i = 0; i < count; i++) {
       const el = document.getElementById('inp-' + i);
       if (el) items[i].val = el.value;
     }
   }
 
-  function setCount(n) {
-    saveInputs();
+  function set_count(n) {
+    save_inputs();
     count = n;
     [1, 2, 3, 4, 6].forEach(v => {
       const b = document.getElementById('cnt-' + v);
@@ -225,26 +322,26 @@ std::string get_menu_html(const std::string& bg_uri, const std::string& def_file
     root.innerHTML = '';
     for (let i = 0; i < count; i++) {
       const it = items[i];
-      const isFile = it.mode === 'file';
+      const is_file = it.mode === 'file';
       const row = document.createElement('div');
       row.className = 'row';
       row.innerHTML = `
         <div class="lbl">Окно #${i + 1}:</div>
-        <button class="${!isFile ? 'active' : ''}" onclick="setMode(${i}, 'url')">Ссылка</button>
-        <button class="${isFile ? 'active' : ''}" onclick="setMode(${i}, 'file')">Файл</button>
+        <button class="${!is_file ? 'active' : ''}" onclick="set_mode(${i}, 'url')">Ссылка</button>
+        <button class="${is_file ? 'active' : ''}" onclick="set_mode(${i}, 'file')">Файл</button>
         <input class="inp" id="inp-${i}" value="${it.val}"
-               onfocus="activeIdx = ${i}"
+               onfocus="active_idx = ${i}"
                oninput="items[${i}].val = this.value" />
-        <button onclick="pasteText(${i})">Вставить</button>
-        <button onclick="clearText(${i})">Очистить</button>
-        ${isFile ? `<button onclick="pickFile(${i})">Обзор...</button>` : ''}
+        <button onclick="paste_text(${i})">Вставить</button>
+        <button onclick="clear_text(${i})">Очистить</button>
+        ${is_file ? `<button onclick="pick_file(${i})">Обзор...</button>` : ''}
       `;
       root.appendChild(row);
     }
   }
 
-  function setMode(i, m) {
-    saveInputs();
+  function set_mode(i, m) {
+    save_inputs();
     items[i].mode = m;
     if (m === 'file' && items[i].val.startsWith('http')) {
       items[i].val = '__DEF_FILE__';
@@ -254,19 +351,19 @@ std::string get_menu_html(const std::string& bg_uri, const std::string& def_file
     render();
   }
 
-  function clearText(i) {
+  function clear_text(i) {
     items[i].val = '';
     const el = document.getElementById('inp-' + i);
     if (el) { el.value = ''; el.focus(); }
   }
 
-  function pasteText(i) {
-    activeIdx = i;
-    sendCmd('CMD_PASTE', String(i));
+  function paste_text(i) {
+    active_idx = i;
+    send_cmd('CMD_PASTE', String(i));
   }
 
-  window.setClipboardText = (i, txt) => {
-    const idx = (i >= 0 && i < count) ? i : activeIdx;
+  window.set_clipboard_text = (i, txt) => {
+    const idx = (i >= 0 && i < count) ? i : active_idx;
     const el = document.getElementById('inp-' + idx);
     if (el) {
       el.value = txt;
@@ -275,47 +372,58 @@ std::string get_menu_html(const std::string& bg_uri, const std::string& def_file
     }
   };
 
-  function pickFile(i) {
-    saveInputs();
-    sendCmd('CMD_BROWSE', String(i));
+  function pick_file(i) {
+    save_inputs();
+    send_cmd('CMD_BROWSE', String(i));
   }
 
-  window.setFilePath = (i, path) => {
+  window.set_file_path = (i, path) => {
     items[i].mode = 'file';
     items[i].val = path;
     render();
   };
 
-  function startApp() {
-    saveInputs();
+  function start_app() {
+    save_inputs();
     const out = [];
     for (let i = 0; i < count; i++) {
       let v = (items[i].val || '').trim();
       if (!v) v = 'https://example.com';
       out.push(encodeURIComponent(items[i].mode + '::' + v));
     }
-    sendCmd('CMD_LAUNCH', out.join('|'));
+    send_cmd('CMD_LAUNCH', out.join('|'));
   }
 
-  render();
+  set_count(count);
 </script>
 </body>
 </html>
 )html";
 
-    size_t p1 = html.find("__BG_URI__");
-    if (p1 != std::string::npos) html.replace(p1, 10, bg_uri);
+    int init_cnt = std::clamp(static_cast<int>(cfg.raw_windows.size()), 1, 6);
+    std::string items_js = build_items_js(cfg.raw_windows, def_file);
 
-    size_t p2 = 0;
-    while ((p2 = html.find("__DEF_FILE__", p2)) != std::string::npos) {
-        html.replace(p2, 12, def_file);
-        p2 += def_file.length();
-    }
+    auto replace_all = [&](const std::string& from, const std::string& to) {
+        size_t p = 0;
+        while ((p = html.find(from, p)) != std::string::npos) {
+            html.replace(p, from.length(), to);
+            p += to.length();
+        }
+    };
+
+    replace_all("__BG_URI__", bg_uri);
+    replace_all("__DEF_FILE__", escape_js(def_file));
+    replace_all("__ITEMS_JS__", items_js);
+    replace_all("__INIT_COUNT__", std::to_string(init_cnt));
+
     return html;
 }
 
-GLuint load_background(const std::string& dir, std::string& out_path) {
-    const char* names[] = {
+GLuint
+load_background(const std::string& dir, const std::string& preferred, std::string& out_path)
+{
+    std::vector<std::string> names = {
+        preferred,
         "background.png", "background.jpg", "background.jpeg", "background.bmp",
         "../background.png", "../background.jpg", "../background.bmp"
     };
@@ -323,8 +431,9 @@ GLuint load_background(const std::string& dir, std::string& out_path) {
     int w = 0, h = 0, ch = 0;
     unsigned char* data = nullptr;
 
-    for (const char* name : names) {
-        std::string p = dir + name;
+    for (const auto& name : names) {
+        if (name.empty()) continue;
+        std::string p = (name[0] == '/' || (name.size() > 1 && name[1] == ':')) ? name : (dir + name);
         data = stbi_load(p.c_str(), &w, &h, &ch, 4);
         if (data) {
             out_path = p;
@@ -377,7 +486,9 @@ GLuint load_background(const std::string& dir, std::string& out_path) {
     return tex;
 }
 
-void draw_background(GLuint tex, int w, int h) {
+void
+draw_background(GLuint tex, int w, int h)
+{
     if (!tex) return;
     glEnable(GL_TEXTURE_2D);
     glBindTexture(GL_TEXTURE_2D, tex);
@@ -393,11 +504,11 @@ void draw_background(GLuint tex, int w, int h) {
     glDisable(GL_TEXTURE_2D);
 }
 
-class AppConfig : public CefApp {
+class app_config : public CefApp {
 public:
     void OnBeforeCommandLineProcessing(
         const CefString& process_type,
-        CefRefPtr<CefCommandLine> cmd) override 
+        CefRefPtr<CefCommandLine> cmd) override
     {
         cmd->AppendSwitchWithValue("renderer-process-limit", "4");
         cmd->AppendSwitch("process-per-site");
@@ -408,82 +519,89 @@ public:
         cmd->AppendSwitch("disable-gpu-sandbox");
     }
 
-    IMPLEMENT_REFCOUNTING(AppConfig);
+    IMPLEMENT_REFCOUNTING(app_config);
 };
 
-class BrowserWin : public CefClient,
-                   public CefRenderHandler,
-                   public CefLifeSpanHandler,
-                   public CefDisplayHandler,
-                   public CefLoadHandler {
+class browser_win : public CefClient,
+                    public CefRenderHandler,
+                    public CefLifeSpanHandler,
+                    public CefDisplayHandler,
+                    public CefLoadHandler {
 public:
-    int id;
-    int x = 0, y = 0;
-    int w = 500, h = 350;
-    GLuint tex = 0;
+    int m_id;
+    int m_x = 0, m_y = 0;
+    int m_w = 500, m_h = 350;
+    GLuint m_tex = 0;
 
-    std::mutex mtx;
-    std::vector<uint8_t> buf;
-    bool updated = false;
+    std::mutex m_mtx;
+    std::vector<uint8_t> m_buf;
+    bool m_updated = false;
 
-    CefRefPtr<CefBrowser> browser;
+    CefRefPtr<CefBrowser> m_browser;
 
-    BrowserWin(int win_id, int px, int py, int pw, int ph)
-        : id(win_id), x(px), y(py), w(pw), h(ph) 
+    browser_win(int win_id, int px, int py, int pw, int ph)
+        : m_id(win_id), m_x(px), m_y(py), m_w(pw), m_h(ph)
     {
-        buf.resize(static_cast<size_t>(w) * static_cast<size_t>(h) * 4, 240);
-        glGenTextures(1, &tex);
-        glBindTexture(GL_TEXTURE_2D, tex);
+        m_buf.resize(static_cast<size_t>(m_w) * static_cast<size_t>(m_h) * 4, 240);
+        glGenTextures(1, &m_tex);
+        glBindTexture(GL_TEXTURE_2D, m_tex);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, buf.data());
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_w, m_h, 0, GL_BGRA, GL_UNSIGNED_BYTE, m_buf.data());
     }
 
-    ~BrowserWin() {
-        if (tex) glDeleteTextures(1, &tex);
+    ~browser_win()
+    {
+        if (m_tex) glDeleteTextures(1, &m_tex);
     }
 
-    bool hit(int px, int py) const {
-        return px >= x && px < (x + w) && py >= y && py < (y + h);
+    bool hit(int px, int py) const
+    {
+        return px >= m_x && px < (m_x + m_w) && py >= m_y && py < (m_y + m_h);
     }
 
-    bool hit_drag(int px, int py) const {
-        return hit(px, py) && (py - y) <= HEADER_DRAG_H;
+    bool hit_drag(int px, int py) const
+    {
+        return hit(px, py) && (py - m_y) <= header_drag_h;
     }
 
-    bool hit_resize(int px, int py) const {
-        return hit(px, py) && (px >= x + w - CORNER_RESIZE) && (py >= y + h - CORNER_RESIZE);
+    bool hit_resize(int px, int py) const
+    {
+        return hit(px, py) && (px >= m_x + m_w - corner_resize) && (py >= m_y + m_h - corner_resize);
     }
 
-    void resize(int nw, int nh) {
+    void resize(int nw, int nh)
+    {
         nw = std::max(200, nw);
         nh = std::max(140, nh);
-        if (nw == w && nh == h) return;
+        if (nw == m_w && nh == m_h) return;
 
         {
-            std::lock_guard<std::mutex> lock(mtx);
-            w = nw;
-            h = nh;
+            std::lock_guard<std::mutex> lock(m_mtx);
+            m_w = nw;
+            m_h = nh;
         }
-        if (browser) {
-            browser->GetHost()->WasResized();
-            browser->GetHost()->Invalidate(PET_VIEW);
+        if (m_browser) {
+            m_browser->GetHost()->WasResized();
+            m_browser->GetHost()->Invalidate(PET_VIEW);
         }
     }
 
-    void update_tex() {
-        std::lock_guard<std::mutex> lock(mtx);
-        if (!updated || buf.empty()) return;
-        glBindTexture(GL_TEXTURE_2D, tex);
+    void update_tex()
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        if (!m_updated || m_buf.empty()) return;
+        glBindTexture(GL_TEXTURE_2D, m_tex);
         glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, w, h, 0, GL_BGRA, GL_UNSIGNED_BYTE, buf.data());
-        updated = false;
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, m_w, m_h, 0, GL_BGRA, GL_UNSIGNED_BYTE, m_buf.data());
+        m_updated = false;
     }
 
-    void run_js(const std::string& code) {
-        if (browser && browser->GetMainFrame()) {
-            browser->GetMainFrame()->ExecuteJavaScript(code, browser->GetMainFrame()->GetURL(), 0);
+    void run_js(const std::string& code)
+    {
+        if (m_browser && m_browser->GetMainFrame()) {
+            m_browser->GetMainFrame()->ExecuteJavaScript(code, m_browser->GetMainFrame()->GetURL(), 0);
         }
     }
 
@@ -492,22 +610,28 @@ public:
     CefRefPtr<CefDisplayHandler> GetDisplayHandler() override { return this; }
     CefRefPtr<CefLoadHandler> GetLoadHandler() override { return this; }
 
-    void OnAfterCreated(CefRefPtr<CefBrowser> b) override {
-        browser = b;
+    void OnAfterCreated(CefRefPtr<CefBrowser> b) override
+    {
+        m_browser = b;
         b->GetHost()->WasResized();
         b->GetHost()->Invalidate(PET_VIEW);
     }
 
-    void OnLoadEnd(CefRefPtr<CefBrowser> b, CefRefPtr<CefFrame> frame, int status) override {
+    void OnLoadEnd(CefRefPtr<CefBrowser> b, CefRefPtr<CefFrame> frame, int status) override
+    {
         if (frame->IsMain()) {
             b->GetHost()->WasResized();
             b->GetHost()->Invalidate(PET_VIEW);
         }
     }
 
-    void OnBeforeClose(CefRefPtr<CefBrowser> b) override { browser = nullptr; }
+    void OnBeforeClose(CefRefPtr<CefBrowser> b) override
+    {
+        m_browser = nullptr;
+    }
 
-    void OnTitleChange(CefRefPtr<CefBrowser> b, const CefString& title) override {
+    void OnTitleChange(CefRefPtr<CefBrowser> b, const CefString& title) override
+    {
         std::string t = title.ToString();
 
         auto get_arg = [](const std::string& s) -> std::string {
@@ -539,36 +663,39 @@ public:
         }
     }
 
-    void GetViewRect(CefRefPtr<CefBrowser> b, CefRect& rect) override {
-        std::lock_guard<std::mutex> lock(mtx);
-        rect.Set(0, 0, w, h);
+    void GetViewRect(CefRefPtr<CefBrowser> b, CefRect& rect) override
+    {
+        std::lock_guard<std::mutex> lock(m_mtx);
+        rect.Set(0, 0, m_w, m_h);
     }
 
     void OnPaint(CefRefPtr<CefBrowser> b, PaintElementType type,
-                 const RectList& rects, const void* buffer, int pw, int ph) override 
+                 const RectList& rects, const void* buffer, int pw, int ph) override
     {
         if (type != PET_VIEW || !buffer || pw <= 0 || ph <= 0) return;
-        std::lock_guard<std::mutex> lock(mtx);
-        w = pw;
-        h = ph;
-        buf.resize(static_cast<size_t>(pw) * static_cast<size_t>(ph) * 4);
-        std::memcpy(buf.data(), buffer, buf.size());
-        updated = true;
+        std::lock_guard<std::mutex> lock(m_mtx);
+        m_w = pw;
+        m_h = ph;
+        m_buf.resize(static_cast<size_t>(pw) * static_cast<size_t>(ph) * 4);
+        std::memcpy(m_buf.data(), buffer, m_buf.size());
+        m_updated = true;
     }
 
-    IMPLEMENT_REFCOUNTING(BrowserWin);
+    IMPLEMENT_REFCOUNTING(browser_win);
 };
 
-void draw_window(CefRefPtr<BrowserWin>& win, bool active, bool border = true) {
+void
+draw_window(CefRefPtr<browser_win>& win, bool active, bool border = true)
+{
     win->update_tex();
 
-    float x1 = static_cast<float>(win->x);
-    float y1 = static_cast<float>(win->y);
-    float x2 = static_cast<float>(win->x + win->w);
-    float y2 = static_cast<float>(win->y + win->h);
+    float x1 = static_cast<float>(win->m_x);
+    float y1 = static_cast<float>(win->m_y);
+    float x2 = static_cast<float>(win->m_x + win->m_w);
+    float y2 = static_cast<float>(win->m_y + win->m_h);
 
     glEnable(GL_TEXTURE_2D);
-    glBindTexture(GL_TEXTURE_2D, win->tex);
+    glBindTexture(GL_TEXTURE_2D, win->m_tex);
     glColor4f(1.0f, 1.0f, 1.0f, 1.0f);
 
     glBegin(GL_QUADS);
@@ -593,7 +720,9 @@ void draw_window(CefRefPtr<BrowserWin>& win, bool active, bool border = true) {
     glEnd();
 }
 
-void layout_grid(std::vector<CefRefPtr<BrowserWin>>& wins, int screen_w, int screen_h) {
+void
+layout_grid(std::vector<CefRefPtr<browser_win>>& wins, int screen_w, int screen_h)
+{
     int n = static_cast<int>(wins.size());
     if (n == 0) return;
 
@@ -607,13 +736,15 @@ void layout_grid(std::vector<CefRefPtr<BrowserWin>>& wins, int screen_w, int scr
     for (int i = 0; i < n; ++i) {
         int c = i % cols;
         int r = i / cols;
-        wins[i]->x = gap + c * (w + gap);
-        wins[i]->y = gap + r * (h + gap);
+        wins[i]->m_x = gap + c * (w + gap);
+        wins[i]->m_y = gap + r * (h + gap);
         wins[i]->resize(w, h);
     }
 }
 
-std::string choose_file_dialog() {
+std::string
+choose_file_dialog()
+{
 #ifdef _WIN32
     FILE* p = _popen(
         "powershell -NoProfile -Command \"Add-Type -AssemblyName System.Windows.Forms; "
@@ -644,24 +775,28 @@ std::string choose_file_dialog() {
 #endif
 }
 
-void paste_clipboard(CefRefPtr<BrowserWin>& menu_win, int idx) {
+void
+paste_clipboard(CefRefPtr<browser_win>& menu_win, int idx)
+{
     if (!menu_win || !SDL_HasClipboardText()) return;
     char* clip = SDL_GetClipboardText();
     if (clip) {
         std::string safe = escape_js(clip);
         SDL_free(clip);
-        menu_win->run_js("window.setClipboardText(" + std::to_string(idx) + ", '" + safe + "');");
+        menu_win->run_js("window.set_clipboard_text(" + std::to_string(idx) + ", '" + safe + "');");
     }
 }
 
-int main(int argc, char* argv[]) {
+int
+main(int argc, char* argv[])
+{
 #ifdef _WIN32
     CefMainArgs main_args(GetModuleHandle(nullptr));
 #else
     CefMainArgs main_args(argc, argv);
 #endif
 
-    CefRefPtr<AppConfig> app(new AppConfig());
+    CefRefPtr<app_config> app(new app_config());
     int code = CefExecuteProcess(main_args, app, nullptr);
     if (code >= 0) return code;
 
@@ -672,8 +807,17 @@ int main(int argc, char* argv[]) {
 
     SDL_Init(SDL_INIT_VIDEO);
 
-    int screen_w = 1360;
-    int screen_h = 840;
+    char* base_ptr = SDL_GetBasePath();
+    std::string base_dir = base_ptr ? base_ptr : "./";
+    if (base_ptr) SDL_free(base_ptr);
+    for (char& c : base_dir) if (c == '\\') c = '/';
+
+    const std::string demo_file = base_dir + "demo_local.html";
+    const std::string menu_file = base_dir + "launcher.html";
+
+    app_settings cfg = load_config(base_dir, demo_file);
+    int screen_w = cfg.width;
+    int screen_h = cfg.height;
 
     SDL_Window* window = SDL_CreateWindow(
         "Workspace",
@@ -686,17 +830,10 @@ int main(int argc, char* argv[]) {
     SDL_GLContext gl_ctx = SDL_GL_CreateContext(window);
     SDL_GL_SetSwapInterval(1);
 
-    char* base_ptr = SDL_GetBasePath();
-    std::string base_dir = base_ptr ? base_ptr : "./";
-    if (base_ptr) SDL_free(base_ptr);
-    for (char& c : base_dir) if (c == '\\') c = '/';
-
     std::string bg_path;
-    GLuint bg_tex = load_background(base_dir, bg_path);
+    GLuint bg_tex = load_background(base_dir, cfg.background, bg_path);
     std::string bg_uri = format_url("file::" + bg_path);
 
-    const std::string demo_file = base_dir + "demo_local.html";
-    const std::string menu_file = base_dir + "launcher.html";
     {
         std::ofstream df(demo_file);
         df << "<!DOCTYPE html><html><body style='background:#f5f5f5;color:#222;font-family:sans-serif;padding:20px;'>"
@@ -704,20 +841,20 @@ int main(int argc, char* argv[]) {
     }
     {
         std::ofstream mf(menu_file);
-        mf << get_menu_html(bg_uri, demo_file);
+        mf << get_menu_html(bg_uri, demo_file, cfg);
     }
 
     bool in_menu = true;
-    CefRefPtr<BrowserWin> menu_win;
-    std::vector<CefRefPtr<BrowserWin>> wins;
+    CefRefPtr<browser_win> menu_win;
+    std::vector<CefRefPtr<browser_win>> wins;
 
     auto open_menu = [&]() {
         for (auto& w : wins) {
-            if (w->browser) w->browser->GetHost()->CloseBrowser(true);
+            if (w->m_browser) w->m_browser->GetHost()->CloseBrowser(true);
         }
         wins.clear();
 
-        menu_win = new BrowserWin(0, 0, 0, screen_w, screen_h);
+        menu_win = new browser_win(0, 0, 0, screen_w, screen_h);
         CefWindowInfo info;
         info.SetAsWindowless(0);
         CefBrowserSettings bset;
@@ -728,14 +865,14 @@ int main(int argc, char* argv[]) {
     };
 
     auto open_workspace = [&](const std::vector<std::string>& urls) {
-        if (menu_win && menu_win->browser) {
-            menu_win->browser->GetHost()->CloseBrowser(true);
+        if (menu_win && menu_win->m_browser) {
+            menu_win->m_browser->GetHost()->CloseBrowser(true);
         }
         menu_win = nullptr;
 
         wins.clear();
         for (size_t i = 0; i < urls.size(); ++i) {
-            wins.push_back(new BrowserWin(static_cast<int>(i + 1), 0, 0, 500, 350));
+            wins.push_back(new browser_win(static_cast<int>(i + 1), 0, 0, 500, 350));
         }
 
         layout_grid(wins, screen_w, screen_h);
@@ -753,10 +890,18 @@ int main(int argc, char* argv[]) {
         in_menu = false;
     };
 
-    open_menu();
+    if (cfg.mode == "auto" && !cfg.raw_windows.empty()) {
+        std::vector<std::string> urls;
+        for (const auto& item : cfg.raw_windows) {
+            urls.push_back(format_url(item));
+        }
+        open_workspace(urls);
+    } else {
+        open_menu();
+    }
 
-    CefRefPtr<BrowserWin> dragged = nullptr;
-    CefRefPtr<BrowserWin> resized = nullptr;
+    CefRefPtr<browser_win> dragged = nullptr;
+    CefRefPtr<browser_win> resized = nullptr;
     int off_x = 0, off_y = 0;
     int start_w = 0, start_h = 0, start_mx = 0, start_my = 0;
 
@@ -789,7 +934,7 @@ int main(int argc, char* argv[]) {
             if (pick_i >= 0 && in_menu && menu_win) {
                 std::string path = choose_file_dialog();
                 if (!path.empty()) {
-                    menu_win->run_js("window.setFilePath(" + std::to_string(pick_i) + ", '" + escape_js(path) + "');");
+                    menu_win->run_js("window.set_file_path(" + std::to_string(pick_i) + ", '" + escape_js(path) + "');");
                 }
             }
             if (paste_i >= 0 && in_menu && menu_win) {
@@ -818,38 +963,38 @@ int main(int argc, char* argv[]) {
                 } else if (ctrl && sym == SDLK_v) {
                     if (in_menu && menu_win) {
                         paste_clipboard(menu_win, -1);
-                    } else if (!wins.empty() && wins.back()->browser) {
-                        wins.back()->browser->GetMainFrame()->Paste();
+                    } else if (!wins.empty() && wins.back()->m_browser) {
+                        wins.back()->m_browser->GetMainFrame()->Paste();
                     }
                 }
             }
 
-            if (in_menu && menu_win && menu_win->browser) {
+            if (in_menu && menu_win && menu_win->m_browser) {
                 if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
                     SDL_RaiseWindow(window);
                     SDL_SetWindowInputFocus(window);
                     CefMouseEvent cev;
                     cev.x = ev.button.x;
                     cev.y = ev.button.y;
-                    menu_win->browser->GetHost()->SetFocus(true);
-                    menu_win->browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, false, 1);
+                    menu_win->m_browser->GetHost()->SetFocus(true);
+                    menu_win->m_browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, false, 1);
                 } else if (ev.type == SDL_MOUSEBUTTONUP && ev.button.button == SDL_BUTTON_LEFT) {
                     CefMouseEvent cev;
                     cev.x = ev.button.x;
                     cev.y = ev.button.y;
-                    menu_win->browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, true, 1);
+                    menu_win->m_browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, true, 1);
                 } else if (ev.type == SDL_MOUSEMOTION) {
                     CefMouseEvent cev;
                     cev.x = ev.motion.x;
                     cev.y = ev.motion.y;
-                    menu_win->browser->GetHost()->SendMouseMoveEvent(cev, false);
+                    menu_win->m_browser->GetHost()->SendMouseMoveEvent(cev, false);
                 } else if (ev.type == SDL_MOUSEWHEEL) {
                     int mx, my;
                     SDL_GetMouseState(&mx, &my);
                     CefMouseEvent cev;
                     cev.x = mx;
                     cev.y = my;
-                    menu_win->browser->GetHost()->SendMouseWheelEvent(cev, ev.wheel.x * 120, ev.wheel.y * 120);
+                    menu_win->m_browser->GetHost()->SendMouseWheelEvent(cev, ev.wheel.x * 120, ev.wheel.y * 120);
                 }
                 continue;
             }
@@ -867,20 +1012,20 @@ int main(int argc, char* argv[]) {
 
                         if (w->hit_resize(mx, my)) {
                             resized = w;
-                            start_w = w->w;
-                            start_h = w->h;
+                            start_w = w->m_w;
+                            start_h = w->m_h;
                             start_mx = mx;
                             start_my = my;
                         } else if (alt || w->hit_drag(mx, my)) {
                             dragged = w;
-                            off_x = mx - w->x;
-                            off_y = my - w->y;
-                        } else if (w->browser) {
+                            off_x = mx - w->m_x;
+                            off_y = my - w->m_y;
+                        } else if (w->m_browser) {
                             CefMouseEvent cev;
-                            cev.x = mx - w->x;
-                            cev.y = my - w->y;
-                            w->browser->GetHost()->SetFocus(true);
-                            w->browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, false, 1);
+                            cev.x = mx - w->m_x;
+                            cev.y = my - w->m_y;
+                            w->m_browser->GetHost()->SetFocus(true);
+                            w->m_browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, false, 1);
                         }
                         break;
                     }
@@ -892,12 +1037,12 @@ int main(int argc, char* argv[]) {
                     dragged = nullptr;
                 } else if (resized) {
                     resized = nullptr;
-                } else if (!wins.empty() && wins.back()->browser) {
+                } else if (!wins.empty() && wins.back()->m_browser) {
                     auto active = wins.back();
                     CefMouseEvent cev;
-                    cev.x = ev.button.x - active->x;
-                    cev.y = ev.button.y - active->y;
-                    active->browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, true, 1);
+                    cev.x = ev.button.x - active->m_x;
+                    cev.y = ev.button.y - active->m_y;
+                    active->m_browser->GetHost()->SendMouseClickEvent(cev, MBT_LEFT, true, 1);
                 }
             }
 
@@ -906,23 +1051,23 @@ int main(int argc, char* argv[]) {
                 int my = ev.motion.y;
 
                 if (dragged) {
-                    int max_x = std::max(0, screen_w - dragged->w);
-                    int max_y = std::max(0, screen_h - dragged->h);
-                    dragged->x = std::clamp(mx - off_x, 0, max_x);
-                    dragged->y = std::clamp(my - off_y, 0, max_y);
+                    int max_x = std::max(0, screen_w - dragged->m_w);
+                    int max_y = std::max(0, screen_h - dragged->m_h);
+                    dragged->m_x = std::clamp(mx - off_x, 0, max_x);
+                    dragged->m_y = std::clamp(my - off_y, 0, max_y);
                 } else if (resized) {
-                    int max_w = screen_w - resized->x;
-                    int max_h = screen_h - resized->y;
+                    int max_w = screen_w - resized->m_x;
+                    int max_h = screen_h - resized->m_y;
                     int nw = std::clamp(start_w + (mx - start_mx), 200, max_w);
                     int nh = std::clamp(start_h + (my - start_my), 140, max_h);
                     resized->resize(nw, nh);
                 } else {
                     for (int i = static_cast<int>(wins.size()) - 1; i >= 0; --i) {
-                        if (wins[i]->hit(mx, my) && wins[i]->browser) {
+                        if (wins[i]->hit(mx, my) && wins[i]->m_browser) {
                             CefMouseEvent cev;
-                            cev.x = mx - wins[i]->x;
-                            cev.y = my - wins[i]->y;
-                            wins[i]->browser->GetHost()->SendMouseMoveEvent(cev, false);
+                            cev.x = mx - wins[i]->m_x;
+                            cev.y = my - wins[i]->m_y;
+                            wins[i]->m_browser->GetHost()->SendMouseMoveEvent(cev, false);
                             break;
                         }
                     }
@@ -933,11 +1078,11 @@ int main(int argc, char* argv[]) {
                 int mx, my;
                 SDL_GetMouseState(&mx, &my);
                 for (int i = static_cast<int>(wins.size()) - 1; i >= 0; --i) {
-                    if (wins[i]->hit(mx, my) && wins[i]->browser) {
+                    if (wins[i]->hit(mx, my) && wins[i]->m_browser) {
                         CefMouseEvent cev;
-                        cev.x = mx - wins[i]->x;
-                        cev.y = my - wins[i]->y;
-                        wins[i]->browser->GetHost()->SendMouseWheelEvent(cev, ev.wheel.x * 120, ev.wheel.y * 120);
+                        cev.x = mx - wins[i]->m_x;
+                        cev.y = my - wins[i]->m_y;
+                        wins[i]->m_browser->GetHost()->SendMouseWheelEvent(cev, ev.wheel.x * 120, ev.wheel.y * 120);
                         break;
                     }
                 }
@@ -970,7 +1115,7 @@ int main(int argc, char* argv[]) {
     }
 
     if (bg_tex) glDeleteTextures(1, &bg_tex);
-    if (menu_win && menu_win->browser) menu_win->browser->GetHost()->CloseBrowser(true);
+    if (menu_win && menu_win->m_browser) menu_win->m_browser->GetHost()->CloseBrowser(true);
     menu_win = nullptr;
     wins.clear();
     CefShutdown();
