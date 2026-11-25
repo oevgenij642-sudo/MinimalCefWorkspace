@@ -10,21 +10,8 @@ endif()
 
 find_package(OpenGL REQUIRED)
 
-
-set(STB_DIR "${CMAKE_CURRENT_BINARY_DIR}/stb")
-file(MAKE_DIRECTORY "${STB_DIR}")
-if(NOT EXISTS "${STB_DIR}/stb_image.h")
-    file(DOWNLOAD
-        "https://raw.githubusercontent.com/nothings/stb/master/stb_image.h"
-        "${STB_DIR}/stb_image.h"
-        TLS_VERIFY ON
-    )
-endif()
-
-
 set(CEF_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/third_party/cef" CACHE PATH "Path to CEF")
 list(APPEND CMAKE_MODULE_PATH "${CEF_ROOT}/cmake")
-
 
 if(WIN32)
     set(CEF_RUNTIME_LIBRARY_FLAG "/MD" CACHE STRING "Use dynamic runtime" FORCE)
@@ -38,18 +25,7 @@ if(UNIX)
 endif()
 
 if(WIN32)
-    include(FetchContent)
-    FetchContent_Declare(
-        sdl2_win
-        URL https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-devel-2.30.8-VC.zip
-    )
-    FetchContent_MakeAvailable(sdl2_win)
-    FetchContent_GetProperties(sdl2_win SOURCE_DIR SDL2_WIN_DIR)
-
-    if(EXISTS "${SDL2_WIN_DIR}/SDL2-2.30.8/include")
-        set(SDL2_WIN_DIR "${SDL2_WIN_DIR}/SDL2-2.30.8")
-    endif()
-
+    set(SDL2_WIN_DIR "${CMAKE_CURRENT_SOURCE_DIR}/third_party/sdl2")
     set(SDL2_INCLUDE_DIRS "${SDL2_WIN_DIR}/include")
     set(SDL2_LIBRARIES
         "${SDL2_WIN_DIR}/lib/x64/SDL2.lib"
@@ -58,13 +34,16 @@ if(WIN32)
     set(SDL2_DLL "${SDL2_WIN_DIR}/lib/x64/SDL2.dll")
 else()
     find_package(SDL2 REQUIRED)
+    string(STRIP "${SDL2_INCLUDE_DIRS}" SDL2_INCLUDE_DIRS)
+    string(STRIP "${SDL2_LIBRARIES}" SDL2_LIBRARIES)
 endif()
 
 add_executable(MinimalCefWorkspace main.cpp)
 
 target_include_directories(MinimalCefWorkspace PRIVATE
-    ${CEF_ROOT}
-    ${SDL2_INCLUDE_DIRS}${STB_DIR}
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CEF_ROOT}"
+    "${SDL2_INCLUDE_DIRS}"
 )
 
 if(WIN32)
@@ -102,7 +81,6 @@ else()
     COPY_FILES(MinimalCefWorkspace "${CEF_BINARY_FILES}" "${CEF_BINARY_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
     COPY_FILES(MinimalCefWorkspace "${CEF_RESOURCE_FILES}" "${CEF_RESOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
 endif()
-
 
 foreach(BG_FILE "background.png" "background.jpg" "background.bmp")
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${BG_FILE}")

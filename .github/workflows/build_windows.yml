@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Download CEF Windows x64 Minimal
+      - name: Download CEF and SDL2 for Windows x64
         shell: pwsh
         run: |
           $data = Invoke-RestMethod -Uri 'https://cef-builds.spotifycdn.com/index.json'
@@ -23,6 +23,16 @@ jobs:
           New-Item -ItemType Directory -Force -Path 'third_party\cef' | Out-Null
           tar -xjf cef_win64.tar.bz2 -C third_party/cef --strip-components=1
           Remove-Item cef_win64.tar.bz2
+
+          Invoke-WebRequest -Uri 'https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-devel-2.30.8-VC.zip' -OutFile 'sdl2_win.zip'
+          New-Item -ItemType Directory -Force -Path 'third_party\sdl2' | Out-Null
+          tar -xf sdl2_win.zip -C third_party/sdl2 --strip-components=1
+          Remove-Item sdl2_win.zip
+
+          if (!(Test-Path 'third_party\sdl2\include\SDL.h')) {
+            Write-Error "SDL.h not found after extraction!"
+            exit 1
+          }
 
       - name: Configure CMake
         run: cmake -B build_win -A x64
