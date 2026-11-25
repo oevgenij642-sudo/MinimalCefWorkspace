@@ -40,16 +40,22 @@ endif()
 if(WIN32)
     include(FetchContent)
     FetchContent_Declare(
-        SDL2_win
+        sdl2_win
         URL https://github.com/libsdl-org/SDL/releases/download/release-2.30.8/SDL2-devel-2.30.8-VC.zip
     )
-    FetchContent_MakeAvailable(SDL2_win)
-    set(SDL2_INCLUDE_DIRS "${sdl2_win_SOURCE_DIR}/include")
+    FetchContent_MakeAvailable(sdl2_win)
+    FetchContent_GetProperties(sdl2_win SOURCE_DIR SDL2_WIN_DIR)
+
+    if(EXISTS "${SDL2_WIN_DIR}/SDL2-2.30.8/include")
+        set(SDL2_WIN_DIR "${SDL2_WIN_DIR}/SDL2-2.30.8")
+    endif()
+
+    set(SDL2_INCLUDE_DIRS "${SDL2_WIN_DIR}/include")
     set(SDL2_LIBRARIES
-        "${sdl2_win_SOURCE_DIR}/lib/x64/SDL2.lib"
-        "${sdl2_win_SOURCE_DIR}/lib/x64/SDL2main.lib"
+        "${SDL2_WIN_DIR}/lib/x64/SDL2.lib"
+        "${SDL2_WIN_DIR}/lib/x64/SDL2main.lib"
     )
-    set(SDL2_DLL "${sdl2_win_SOURCE_DIR}/lib/x64/SDL2.dll")
+    set(SDL2_DLL "${SDL2_WIN_DIR}/lib/x64/SDL2.dll")
 else()
     find_package(SDL2 REQUIRED)
 endif()
